@@ -10,6 +10,7 @@ Right now the big changes are
 * Tests limited to changes
 * Arlo's Commit Notation PopUp
 * Pausing
+* BEEP BEEP
 
 ### Tests limited to changes
 Assumptions: 
@@ -30,6 +31,9 @@ You don't have to - it's there and it's a helper.
 
 ### Pausing
 You can hit 'p' to pause. And then 'p' again to resume. This will allow for some changes without TCR fighting you. I added it for project creation... then I created a script to do my project creation for me to work with TCR.
+
+### BEEP BEEP
+It beeps. I tried to make happy and sad sounding beeps; but it'll beep at you after running the tests.
 
 ## Running
 Running the script is pretty simple
