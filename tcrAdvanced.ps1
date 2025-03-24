@@ -3,24 +3,24 @@ param (
     [string]$folder
 )
 
-# Enables debouncing repeated triggers
-$global:debounceTime = (Get-Date)
-$global:debounceInterval = 1 # Debounce interval in seconds
+# Declare variables at the beginning of the script
+$debounceTime = (Get-Date)
+$debounceInterval = 1 # Debounce interval in seconds
+$tcrPaused = $false
 
-# Eliminates multiple builds off a single save.
-Function global:Debounce($time){
-    $timeDifference = ($time - $global:debounceTime).TotalSeconds
-    if ($timeDifference -lt $global:debounceInterval) {
-        #Write-Host "### Debounced: Only $timeDifference seconds since last event" -ForegroundColor Blue
+# Enables debouncing repeated triggers
+Function Test-Debounce {
+    $timeDifference = ($time - $debounceTime).TotalSeconds
+    if ($timeDifference -lt $debounceInterval) {
         return $true
     }
-    #Write-Host "### Running: $timeDifference seconds since last event" -ForegroundColor Blue
-    $global:debounceTime = $time
+    $debounceTime = $time
     return $false
 }
+
 # The Core Workload
-Function global:TCR($eventInfo){
-    if(Debounce($eventInfo.TimeGenerated)){#Guard Clause to not run on multiple events
+Function Invoke-TCR {
+    if (Test-Debounce $eventInfo.TimeGenerated) { # Guard Clause to not run on multiple events
         return
     }
     Write-Host ""
@@ -31,53 +31,49 @@ Function global:TCR($eventInfo){
     $path = $eventInfo.SourceEventArgs.FullPath
     Write-Host "The file $name at $path was $changeType at $timeStamp"
 
-    $testResults = RunTests $path
+    $testResults = Invoke-RunTests $path
 
-    
     Write-Host "### Tests Run - checking results"
-    # Write-Host "### Tests Run results [$testResults]"
 
-    if(-not $testResults) {
+    if (-not $testResults) {
         Write-Host "### No test results. Cannot determine outcome." -ForegroundColor Yellow
         return
     }
 
-    if(NoTestsFound $testResults) { # Guard clause if no tests are found
+    if (Test-NoTestsFound $testResults) { # Guard clause if no tests are found
         Write-Host "### No tests found. Cannot determine outcome." -ForegroundColor Yellow
         return
     }
     
-    if(OnlySingleNotImplementedException $testResults) {
+    if (Test-OnlySingleNotImplementedException $testResults) {
         Write-Host "### A single NotImplementedException is allowed. No Change." -ForegroundColor Cyan
         [System.Console]::Beep(800, 200)
         return
     }
 
-    if(TestsPassed $testResults) {
-        Write-Host "### Tests Passes. Committing." -ForegroundColor Green
+    if (Test-TestsPassed $testResults) {
+        Write-Host "### Tests Passed. Committing." -ForegroundColor Green
         [System.Console]::Beep(1200, 200)
         [System.Console]::Beep(1400, 500)
-        Commit
+        Invoke-Commit
         return
     }
 
-    if(TestsFailed $testResults) { 
+    if (Test-TestsFailed $testResults) { 
         Write-Host "### Tests failed. Reverting." -ForegroundColor Red
         [System.Console]::Beep(500, 200)
         [System.Console]::Beep(300, 500)
-        Revert
+        Invoke-Revert
         return
     }
 
-    if(BuildFailed $testResults) { # Guard clause if the build fails
-        # qgil - 2025-03-18: Not sure why I had this before... leaving it in... for now.
+    if (Test-BuildFailed $testResults) { # Guard clause if the build fails
         Write-Host "### Build failed. Reverting." -ForegroundColor Magenta
         [System.Console]::Beep(400, 200)
         [System.Console]::Beep(300, 200)
-        Revert
+        Invoke-Revert
         return
     }
-    
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -207,7 +203,7 @@ Examples
     }
 }
 
-function GitChanges{
+function Get-GitChanges {
     # Run git status and capture the output to determine changed files
     $gitStatusOutput = git status --porcelain *.cs
     Write-Host "### Found changes in the repository [$gitStatusOutput]" -ForegroundColor Blue
@@ -215,8 +211,8 @@ function GitChanges{
 }
 
 # Commits our code, rebases, pushes to the server
-function Commit{
-    if(-not $(GitChanges)){
+function Invoke-Commit {
+    if (-not $(Get-GitChanges)) {
         Write-Host "No changes to commit." -ForegroundColor Yellow
         return
     }
@@ -234,7 +230,7 @@ function Commit{
 }
 
 # Reset our code folder
-function Revert{
+function Invoke-Revert {
     # Nuke directories
     Invoke-Command "git clean -df -e **.Tests"
     # Restore files
@@ -245,22 +241,23 @@ function Revert{
 }
 
 # Helper function to minimize clutter in other methods
-function Invoke-Command($command){
+function Invoke-Command {
     #Write-Host "Executing [$command]" -ForegroundColor Yellow
     Invoke-Expression -Command: $command | Write-Host
 }
 
-function OnlySingleNotImplementedException($testOutput){
-    $nie = SingleNotImplementedException $testResults
-    $nmf = NotMultipleFailedTests $testResults
+function Test-OnlySingleNotImplementedException {
+    $nie = Test-SingleNotImplementedException $testResults
+    $nmf = Test-NotMultipleFailedTests $testResults
     return $nie -and $nmf
 }
-function SingleNotImplementedException($testOutput){
+
+function Test-SingleNotImplementedException {
     $count = ([regex]::Matches($testOutput, "System.NotImplementedException: The method or operation is not implemented." )).count
     return $count -eq 1
 }
 
-function NotMultipleFailedTests($testOutput){
+function Test-NotMultipleFailedTests {
     # Use regex to find the "Failed: X" part of the test output
     $match = [regex]::Match($testOutput, "Failed:\s*(\d+)")
     if ($match.Success) {
@@ -270,27 +267,32 @@ function NotMultipleFailedTests($testOutput){
     return $false # Default to false if no match is found
 }
 
-function ProbableProjectCreation($testOutput){
+function Test-ProbableProjectCreation {
     return $testOutput -Match "Project file does not exist."
 }
-function NoTestsFound($testOutput){
+
+function Test-NoTestsFound {
     return $testOutput -Match "No test matches the given testcase"
 }
-function TestsPassed($testOutput){
+
+function Test-TestsPassed {
     return $testOutput -Match "Test Run Successful."
 }
-function TestsFailed($testOutput){
-    return TestRunStarted $testResults -and BuildFailed $testResults
+
+function Test-TestsFailed {
+    return Test-TestRunStarted $testResults -and Test-BuildFailed $testResults
 }
-function BuildFailed($testOutput){
+
+function Test-BuildFailed {
     return $testOutput -Match "Build FAILED."
 }
-function TestRunStarted($testOutput){
+
+function Test-TestRunStarted {
     return $testOutput -Match "Starting test execution, please wait..."
 }
 
-function RunTests($path){
-    $results = RetrievePaths $path
+function Invoke-RunTests {
+    $results = Get-RetrievePaths $path
 
     if($results.success -eq $false) {
         Write-Host "No csproj file found. Cannot run tests."
@@ -325,7 +327,7 @@ function RunTests($path){
 
         # Display elapsed time while the job is running
         while ($job.State -eq 'Running') {
-            TestRunElapsed $stopwatch
+            Test-TestRunElapsed $stopwatch
             Start-Sleep -Milliseconds 100
         }
 
@@ -336,7 +338,7 @@ function RunTests($path){
         # Stop the stopwatch
         $stopwatch.Stop()
 
-        TestRunElapsed $stopwatch
+        Test-TestRunElapsed $stopwatch
 
         Write-Host ""
 
@@ -348,14 +350,14 @@ function RunTests($path){
     }
 }
 
-function TestRunElapsed($stopwatch){
+function Test-TestRunElapsed {
     $elapsedTime = $stopwatch.Elapsed.ToString("hh\:mm\:ss\.fff")
     Write-Host -NoNewline "`rTest Run Time: (" -ForegroundColor White
     Write-Host -NoNewline $elapsedTime -ForegroundColor Green
     Write-Host -NoNewline ")" -ForegroundColor White
 }
 
-function RetrievePaths($path){
+function Get-RetrievePaths {
     $csprojFile = $null
     $directory = Split-Path -Path $path -Parent
     $changedFilePath = $directory
@@ -392,7 +394,6 @@ function RetrievePaths($path){
     }
 }
 
-
 # Builds our Watcher
 function Register-Watcher {
     Write-Host "Watching $folder"
@@ -404,7 +405,8 @@ function Register-Watcher {
 
     return $watcher
 }
-function ShowSpinner {
+
+function Show-Spinner {
     param (
         [string[]]$spinnerChars = @('|', '/', '-', '\'), # Array of spinner characters
         [int]$currentIndex = 0                          # Current index in the spinner array
@@ -416,31 +418,24 @@ function ShowSpinner {
     # Return the next index (loop back to 0 if at the end of the array)
     return ($currentIndex + 1) % $spinnerChars.Length
 }
+
 $tcrRunning = $false
-$global:tcrPaused = $false
-function DoTheWork{
+function Invoke-DoTheWork {
     $FileSystemWatcher = Register-Watcher
     $Action = {
-
-            
-        if($global:tcrPaused){ 
+        if ($tcrPaused) { 
             return
         }
          
         $filePath = $event.SourceEventArgs.FullPath
         if ($filePath -match "\\obj\\") {
-            #Write-Host "Ignoring changes in obj directory: $filePath" -ForegroundColor Yellow
             return
         }
 
-        # Ensure the event is for a file with exactly the .cs extension
         if ($filePath -match "\.cs$" -or $filePath -match "\.csproj$") {
-            #Write-Host "Processing file: $filePath"
             $tcrRunning = $true
-            TCR $event
+            Invoke-TCR $event
             $tcrRunning = $false
-        } else {
-            #Write-Host "Ignoring file with unsupported extension: $filePath" -ForegroundColor Yellow
         }
     }
     # add event handlers
@@ -460,8 +455,8 @@ function DoTheWork{
             if ([System.Console]::KeyAvailable) {
                 $key = [System.Console]::ReadKey($true).Key
                 if ($key -eq 'P') {
-                    $global:tcrPaused = -not $global:tcrPaused
-                    if ($global:tcrPaused ) {
+                    $tcrPaused = -not $tcrPaused
+                    if ($tcrPaused ) {
                         Write-Host "`rPaused. Press 'P' again to resume." -ForegroundColor Yellow
                     } else {
                         Write-Host "`rResumed." -ForegroundColor Green
@@ -470,7 +465,7 @@ function DoTheWork{
             }
 
             # If paused, skip processing
-            if ($global:tcrPaused) {
+            if ($tcrPaused) {
                 Start-Sleep -Milliseconds 100
                 continue
             }
@@ -481,7 +476,7 @@ function DoTheWork{
             }
             else{
                 # Call the spinner function and update the spinner index
-                $spinnerIndex = ShowSpinner -currentIndex $spinnerIndex
+                $spinnerIndex = Show-Spinner -currentIndex $spinnerIndex
                 Wait-Event -Timeout 1 # Keep the reduced timeout here
             }
             
@@ -520,7 +515,7 @@ try {
     Write-Host "Changed directory to $folder"
 
     # Perform the work
-    DoTheWork
+    Invoke-DoTheWork
 }
 finally {
     # Change back to the original directory
