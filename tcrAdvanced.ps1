@@ -3,81 +3,115 @@ param (
     [string]$folder
 )
 
-# Enables debouncing repeated triggers
+$debugLog = $true
+
 $global:debounceTime = (Get-Date)
-$global:debounceInterval = 1 # Debounce interval in seconds
+$global:debounceInterval = 3 # Debounce interval in seconds
+$global:tcrRunning = $false
 
 # Eliminates multiple builds off a single save.
 Function global:Debounce($time){
     $timeDifference = ($time - $global:debounceTime).TotalSeconds
     if ($timeDifference -lt $global:debounceInterval) {
-        #Write-Host "### Debounced: Only $timeDifference seconds since last event" -ForegroundColor Blue
+        Invoke-DebugLog "### Debounced: Only $timeDifference seconds since last event" -ForegroundColor Blue
         return $true
     }
-    #Write-Host "### Running: $timeDifference seconds since last event" -ForegroundColor Blue
+    Invoke-DebugLog "### Running: $timeDifference seconds since last event" -ForegroundColor Blue
     $global:debounceTime = $time
     return $false
 }
+
+function Invoke-DebugLog{
+    param (
+        [string]$msg
+    )
+
+    if(-not $debugLog){ return }
+    
+    Write-Host "`r$($msg)" -ForegroundColor Gray
+}
+
 # The Core Workload
-Function global:TCR($eventInfo){
-    if(Debounce($eventInfo.TimeGenerated)){#Guard Clause to not run on multiple events
-        return
-    }
-    Write-Host ""
-    $name = $eventInfo.SourceEventArgs.Name
-    $changeType = $eventInfo.SourceEventArgs.ChangeType
-    $timeStamp = $eventInfo.TimeGenerated
-    
-    $path = $eventInfo.SourceEventArgs.FullPath
-    Write-Host "The file $name at $path was $changeType at $timeStamp"
+function global:TCR($eventInfo){
+    try{
+        if(Debounce($eventInfo.TimeGenerated)){#Guard Clause to not run on multiple events
+            return
+        }
+        if($global:tcrRunning){
+            Write-Host "### Already running TCR. Skipping this event." -ForegroundColor Yellow
+            return
+        }
+        $tcrRunning = $true
 
-    $testResults = RunTests $path
+        Write-Host ""
+        $name = $eventInfo.SourceEventArgs.Name
+        $changeType = $eventInfo.SourceEventArgs.ChangeType
+        $timeStamp = $eventInfo.TimeGenerated
+        
+        $path = $eventInfo.SourceEventArgs.FullPath
+        Write-Host "The file $name at $path was $changeType at $timeStamp"
 
-    
-    Write-Host "### Tests Run - checking results"
-    # Write-Host "### Tests Run results [$testResults]"
+        $testResults = RunTests $path
 
-    if(-not $testResults) {
-        Write-Host "### No test results. Cannot determine outcome." -ForegroundColor Yellow
-        return
-    }
+        Write-Host "### Tests Run - checking results"
+        #Write-Host "### Tests Run results [$testResults]"
 
-    if(NoTestsFound $testResults) { # Guard clause if no tests are found
-        Write-Host "### No tests found. Cannot determine outcome." -ForegroundColor Yellow
-        return
-    }
-    
-    if(OnlySingleNotImplementedException $testResults) {
-        Write-Host "### A single NotImplementedException is allowed. No Change." -ForegroundColor Cyan
-        [System.Console]::Beep(800, 200)
-        return
-    }
+        if(-not $testResults) {
+            Write-Host "### No test results. Cannot determine outcome." -ForegroundColor Yellow
+            return
+        }
 
-    if(TestsPassed $testResults) {
-        Write-Host "### Tests Passes. Committing." -ForegroundColor Green
-        [System.Console]::Beep(1200, 200)
-        [System.Console]::Beep(1400, 500)
-        Commit
-        return
-    }
+        Write-Host "### Has Test Results"
 
-    if(TestsFailed $testResults) { 
-        Write-Host "### Tests failed. Reverting." -ForegroundColor Red
-        [System.Console]::Beep(500, 200)
-        [System.Console]::Beep(300, 500)
-        Revert
-        return
-    }
+        if(NoTestsFound $testResults) { # Guard clause if no tests are found
+            Write-Host "### No tests found. Cannot determine outcome." -ForegroundColor Yellow
+            return
+        }
 
-    if(BuildFailed $testResults) { # Guard clause if the build fails
-        # qgil - 2025-03-18: Not sure why I had this before... leaving it in... for now.
-        Write-Host "### Build failed. Reverting." -ForegroundColor Magenta
-        [System.Console]::Beep(400, 200)
-        [System.Console]::Beep(300, 200)
-        Revert
-        return
+        Write-Host "### Has Tests Found"
+        
+        if(OnlySingleNotImplementedException $testResults) {
+            Write-Host "### A single NotImplementedException is allowed. No Change." -ForegroundColor Cyan
+            [System.Console]::Beep(800, 200)
+            return
+        }
+
+        Write-Host "### Non-single NIE"
+
+        if(TestsPassed $testResults) {
+            Write-Host "### Tests Passes. Committing." -ForegroundColor Green
+            [System.Console]::Beep(1200, 200)
+            [System.Console]::Beep(1400, 500)
+            Commit
+            return
+        }
+
+        Write-Host "### tests did not pass"
+
+        if(TestsFailed $testResults) { 
+            Write-Host "### Tests failed. Reverting." -ForegroundColor Red
+            [System.Console]::Beep(500, 200)
+            [System.Console]::Beep(300, 500)
+            Revert
+            return
+        }
+
+        Write-Host "### tests did not fail"
+
+
+        if(BuildFailed $testResults) { # Guard clause if the build fails
+            # qgil - 2025-03-18: Not sure why I had this before... leaving it in... for now.
+            Write-Host "### Build failed. Reverting." -ForegroundColor Magenta
+            [System.Console]::Beep(400, 200)
+            [System.Console]::Beep(300, 200)
+            Revert
+            return
+        }
+
+        Write-Host "### Apparently it went so wrong there's no result. [$testResults]" -ForegroundColor Red
+    }finally{
+        $tcrRunning = $false
     }
-    
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -146,10 +180,10 @@ Examples
     $form.Controls.Add($renameButton)
 
     $inlineButton = New-Object System.Windows.Forms.Button
-    $inlineButton.Text = "Inline"
+    $inlineButton.Text = "Create Class"
     $inlineButton.Location = New-Object System.Drawing.Point(90, 270)
     $inlineButton.Add_Click({
-        $textBox.Text = ". r Inline"
+        $textBox.Text = ". r create class"
     })
     $form.Controls.Add($inlineButton)
 
@@ -298,19 +332,21 @@ function RunTests($path){
     }
 
     # Check if the csprojName ends in .Tests
-    $isTestProject = $results.csprojName.EndsWith(".Tests")
+    #$isTestProject = $results.csprojName.EndsWith(".Tests")
+    $isTestProject = $results.csprojName -Match "\.Tests$"
 
+    Write-Host "Running tests for project: $($results.csprojName) located at $($results.csprojPath) and $($results.changedFqn) and $($isTestProject)"
     if($isTestProject) {
-        $testProjectPath = "$($results.csprojPath)\$($results.csprojName).csproj"
+        $testProjectPath = "$($results.csprojPath)\$($results.csprojName)\$($results.csprojName).csproj"
         $testClassFilter = "$($results.changedFqn).$($results.changedName)"
 
     }else{
-        $testProjectPath = "$($results.csprojPath).Tests\$($results.csprojName).Tests.csproj"
-        $testClassFilter = "$($results.changedFqn).Tests.$($results.changedName)Tests"
+        $testProjectPath = "$($results.csprojPath)\$($results.csprojName).Tests\$($results.csprojName).Tests.csproj"
+        $testClassFilter = "$($results.csprojName).Tests$($results.changedFqn -replace $results.csprojName).$($results.changedName)Tests"
     }
 
     #Write-Host "Running tests for project: $($results.csprojName) located at $($results.csprojPath)"
-    #Write-Host "dotnet test $($testProjectPath) --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$($testClassFilter)`" -v n"
+    Write-Host "dotnet test $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" -v n"
     try {
         # Start a stopwatch to track elapsed time
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -340,7 +376,7 @@ function RunTests($path){
 
         Write-Host ""
 
-        $output | ForEach-Object { Write-Host $_ }
+        #$output | ForEach-Object { Write-Host $_ }
 
         return $output
     } catch {
@@ -362,12 +398,12 @@ function RetrievePaths($path){
     #Write-Host "Searching for csproj file starting from $directory"
     while ($directory) {
         $csprojFile = Get-ChildItem -Path $directory -Filter *.csproj -File -ErrorAction SilentlyContinue
-        #Write-Host "Checking directory: $directory and found [$csprojFile]"
+        Write-Host "Checking directory: $directory and found [$csprojFile]"
+        $directory = Split-Path -Path $directory -Parent
         if ($csprojFile) {
-            #Write-Host "Found csproj file: $($csprojFile.FullName)"
+            Write-Host "Found csproj file: $($csprojFile.FullName)"
             break
         }
-        $directory = Split-Path -Path $directory -Parent
     }
 
     if (-not $csprojFile) {
@@ -382,14 +418,19 @@ function RetrievePaths($path){
     $relativePath = $changedFilePath.Substring($changedFilePath.LastIndexOf('\') + 1)
     $relativePath = $relativePath -replace '\\', '.'
 
-    return @{
+    $changedFqn = $csprojFileName + "." + $relativePath
+    
+    $obj = @{
         success = [bool]$csprojFile
         csprojPath = $directory
         csprojName = $csprojFileName
         changedPath = $changedFilePath
         changedName = $changedFileName
-        changedFqn = $relativePath
+        changedFqn = $changedFqn
     }
+
+    Write-Host $($obj | ConvertTo-Json -Depth 10)
+    return $obj
 }
 
 
