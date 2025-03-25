@@ -32,7 +32,10 @@ function Invoke-DebugLog{
 }
 
 # The Core Workload
-function global:TCR($eventInfo){
+function global:TCR{
+    param (
+        [object]$eventInfo
+    )
     try{
         if(Debounce($eventInfo.TimeGenerated)){#Guard Clause to not run on multiple events
             return
@@ -49,11 +52,11 @@ function global:TCR($eventInfo){
         $timeStamp = $eventInfo.TimeGenerated
         
         $path = $eventInfo.SourceEventArgs.FullPath
-        Write-Host "The file $name at $path was $changeType at $timeStamp"
+        Invoke-DebugLog "The file $name at $path was $changeType at $timeStamp"
 
         $testResults = RunTests $path
 
-        Write-Host "### Tests Run - checking results"
+        Invoke-DebugLog "### Tests Run - checking results"
         #Write-Host "### Tests Run results [$testResults]"
 
         if(-not $testResults) {
@@ -61,14 +64,14 @@ function global:TCR($eventInfo){
             return
         }
 
-        Write-Host "### Has Test Results"
+       Invoke-DebugLog "### Has Test Results"
 
         if(NoTestsFound $testResults) { # Guard clause if no tests are found
             Write-Host "### No tests found. Cannot determine outcome." -ForegroundColor Yellow
             return
         }
 
-        Write-Host "### Has Tests Found"
+        Invoke-DebugLog "### Has Tests Found"
         
         if(OnlySingleNotImplementedException $testResults) {
             Write-Host "### A single NotImplementedException is allowed. No Change." -ForegroundColor Cyan
@@ -76,7 +79,7 @@ function global:TCR($eventInfo){
             return
         }
 
-        Write-Host "### Non-single NIE"
+        Invoke-DebugLog "### Non-single NIE"
 
         if(TestsPassed $testResults) {
             Write-Host "### Tests Passes. Committing." -ForegroundColor Green
@@ -86,7 +89,7 @@ function global:TCR($eventInfo){
             return
         }
 
-        Write-Host "### tests did not pass"
+        Invoke-DebugLog "### tests did not pass"
 
         if(TestsFailed $testResults) { 
             Write-Host "### Tests failed. Reverting." -ForegroundColor Red
@@ -96,7 +99,7 @@ function global:TCR($eventInfo){
             return
         }
 
-        Write-Host "### tests did not fail"
+        Invoke-DebugLog "### tests did not fail"
 
 
         if(BuildFailed $testResults) { # Guard clause if the build fails
@@ -109,6 +112,8 @@ function global:TCR($eventInfo){
         }
 
         Write-Host "### Apparently it went so wrong there's no result. [$testResults]" -ForegroundColor Red
+    }catch{
+        Write-Host "### Something went wrong. [$($_.Exception.Message)]" -ForegroundColor Red
     }finally{
         $tcrRunning = $false
     }
@@ -244,7 +249,7 @@ Examples
 function GitChanges{
     # Run git status and capture the output to determine changed files
     $gitStatusOutput = git status --porcelain *.cs
-    Write-Host "### Found changes in the repository [$gitStatusOutput]" -ForegroundColor Blue
+    Invoke-DebugLog "### Found changes in the repository [$gitStatusOutput]" -ForegroundColor Blue
     return $gitStatusOutput
 }
 
@@ -279,23 +284,36 @@ function Revert{
 }
 
 # Helper function to minimize clutter in other methods
-function Invoke-Command($command){
+function Invoke-Command{
+    param (
+        [string]$command
+    )
     #Write-Host "Executing [$command]" -ForegroundColor Yellow
     Invoke-Expression -Command: $command | Write-Host
 }
 
-function OnlySingleNotImplementedException($testOutput){
-    $nie = SingleNotImplementedException $testResults
-    $nmf = NotMultipleFailedTests $testResults
+
+function OnlySingleNotImplementedException {
+    param (
+        [string]$testOutput
+    )
+    $nie = SingleNotImplementedException -testOutput $testOutput
+    $nmf = NotMultipleFailedTests -testOutput $testOutput
     return $nie -and $nmf
 }
-function SingleNotImplementedException($testOutput){
-    $count = ([regex]::Matches($testOutput, "System.NotImplementedException: The method or operation is not implemented." )).count
+
+function SingleNotImplementedException {
+    param (
+        [string]$testOutput
+    )
+    $count = ([regex]::Matches($testOutput, "System.NotImplementedException: The method or operation is not implemented.")).count
     return $count -eq 1
 }
 
-function NotMultipleFailedTests($testOutput){
-    # Use regex to find the "Failed: X" part of the test output
+function NotMultipleFailedTests {
+    param (
+        [string]$testOutput
+    )
     $match = [regex]::Match($testOutput, "Failed:\s*(\d+)")
     if ($match.Success) {
         $failedCount = [int]$match.Groups[1].Value
@@ -304,104 +322,124 @@ function NotMultipleFailedTests($testOutput){
     return $false # Default to false if no match is found
 }
 
-function ProbableProjectCreation($testOutput){
+function ProbableProjectCreation {
+    param (
+        [string]$testOutput
+    )
     return $testOutput -Match "Project file does not exist."
 }
-function NoTestsFound($testOutput){
+
+function NoTestsFound {
+    param (
+        [string]$testOutput
+    )
     return $testOutput -Match "No test matches the given testcase"
 }
-function TestsPassed($testOutput){
+
+function TestsPassed {
+    param (
+        [string]$testOutput
+    )
     return $testOutput -Match "Test Run Successful."
 }
-function TestsFailed($testOutput){
-    return TestRunStarted $testResults -and BuildFailed $testResults
+
+function TestsFailed {
+    param (
+        [string]$testOutput
+    )
+    return TestRunStarted $testOutput -and BuildFailed $testOutput
 }
-function BuildFailed($testOutput){
+
+function BuildFailed {
+    param (
+        [string]$testOutput
+    )
     return $testOutput -Match "Build FAILED."
 }
-function TestRunStarted($testOutput){
+
+function TestRunStarted {
+    param (
+        [string]$testOutput
+    )
     return $testOutput -Match "Starting test execution, please wait..."
 }
 
-function RunTests($path){
-    $results = RetrievePaths $path
+function RunTests {
+    param (
+        [string]$path
+    )
+    $results = RetrievePaths -path $path
 
-    if($results.success -eq $false) {
+    if ($results.success -eq $false) {
         Write-Host "No csproj file found. Cannot run tests."
-        return; 
+        return
     }
 
-    # Check if the csprojName ends in .Tests
-    #$isTestProject = $results.csprojName.EndsWith(".Tests")
     $isTestProject = $results.csprojName -Match "\.Tests$"
 
-    Write-Host "Running tests for project: $($results.csprojName) located at $($results.csprojPath) and $($results.changedFqn) and $($isTestProject)"
-    if($isTestProject) {
+    Invoke-DebugLog "Running tests for project: $($results.csprojName) located at $($results.csprojPath) and $($results.changedFqn) and $($isTestProject)"
+    if ($isTestProject) {
         $testProjectPath = "$($results.csprojPath)\$($results.csprojName)\$($results.csprojName).csproj"
         $testClassFilter = "$($results.changedFqn).$($results.changedName)"
-
-    }else{
+    } else {
         $testProjectPath = "$($results.csprojPath)\$($results.csprojName).Tests\$($results.csprojName).Tests.csproj"
         $testClassFilter = "$($results.csprojName).Tests$($results.changedFqn -replace $results.csprojName).$($results.changedName)Tests"
     }
 
-    #Write-Host "Running tests for project: $($results.csprojName) located at $($results.csprojPath)"
-    Write-Host "dotnet test $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" -v n"
+    #Write-Host "dotnet test $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" -v n"
     try {
-        # Start a stopwatch to track elapsed time
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-        # Run the command in a separate thread while updating elapsed time
         $job = Start-Job -ScriptBlock {
             param ($testProjectPath, $testClassFilter)
-            #Invoke-Expression -Command: "dotnet run $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" " | Tee-Object -Variable output | Write-Host
             dotnet test $testProjectPath --no-restore --configuration DEBUG --filter "FullyQualifiedName~$testClassFilter" -v n
-            return $output
         } -ArgumentList $testProjectPath, $testClassFilter
 
-        # Display elapsed time while the job is running
         while ($job.State -eq 'Running') {
-            TestRunElapsed $stopwatch
+            TestRunElapsed -stopwatch $stopwatch
             Start-Sleep -Milliseconds 100
         }
 
-        # Wait for the job to complete
         $output = Receive-Job -Job $job
         Remove-Job -Job $job
 
-        # Stop the stopwatch
         $stopwatch.Stop()
 
-        TestRunElapsed $stopwatch
+        TestRunElapsed -stopwatch $stopwatch
+
+        $output | ForEach-Object { Invoke-DebugLog $_ }
 
         Write-Host ""
-
-        #$output | ForEach-Object { Write-Host $_ }
-
         return $output
     } catch {
         Write-Host "Error running tests: $_" -ForegroundColor Red
     }
 }
 
-function TestRunElapsed($stopwatch){
+
+function TestRunElapsed {
+    param (
+        [System.Diagnostics.Stopwatch]$stopwatch
+    )
     $elapsedTime = $stopwatch.Elapsed.ToString("hh\:mm\:ss\.fff")
     Write-Host -NoNewline "`rTest Run Time: (" -ForegroundColor White
     Write-Host -NoNewline $elapsedTime -ForegroundColor Green
     Write-Host -NoNewline ")" -ForegroundColor White
 }
 
-function RetrievePaths($path){
+function RetrievePaths {
+    param (
+        [string]$path
+    )
     $csprojFile = $null
     $directory = Split-Path -Path $path -Parent
     $changedFilePath = $directory
-    #Write-Host "Searching for csproj file starting from $directory"
     while ($directory) {
         $csprojFile = Get-ChildItem -Path $directory -Filter *.csproj -File -ErrorAction SilentlyContinue
-        Write-Host "Checking directory: $directory and found [$csprojFile]"
+        Invoke-DebugLog "Checking directory: $directory and found [$csprojFile]"
         $directory = Split-Path -Path $directory -Parent
         if ($csprojFile) {
-            Write-Host "Found csproj file: $($csprojFile.FullName)"
+            Invoke-DebugLog "Found csproj file: $($csprojFile.FullName)"
             break
         }
     }
@@ -410,16 +448,14 @@ function RetrievePaths($path){
         Write-Host "No csproj file found in the directory hierarchy starting from $path"
     }
 
-    # Extract the file name, no extension, from $path
     $changedFileName = [System.IO.Path]::GetFileNameWithoutExtension($path)
     $csprojFileName = [System.IO.Path]::GetFileNameWithoutExtension($csprojFile.FullName)
 
-    # I need the folders from, and including, where the csproj is located down to the changed file location; concatenated with a '.'
     $relativePath = $changedFilePath.Substring($changedFilePath.LastIndexOf('\') + 1)
     $relativePath = $relativePath -replace '\\', '.'
 
     $changedFqn = $csprojFileName + "." + $relativePath
-    
+
     $obj = @{
         success = [bool]$csprojFile
         csprojPath = $directory
@@ -432,7 +468,6 @@ function RetrievePaths($path){
     Write-Host $($obj | ConvertTo-Json -Depth 10)
     return $obj
 }
-
 
 # Builds our Watcher
 function Register-Watcher {
