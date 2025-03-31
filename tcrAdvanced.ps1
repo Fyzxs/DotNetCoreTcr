@@ -382,11 +382,13 @@ function RunTests {
         $testProjectPath = "$($results.csprojPath)\$($results.csprojName)\$($results.csprojName).csproj"
         $testClassFilter = "$($results.changedFqn).$($results.changedName)"
     } else {
+        $modPath = $($results.changedFqn -replace $results.csprojName) + ".";
+
         $testProjectPath = "$($results.csprojPath)\$($results.csprojName).Tests\$($results.csprojName).Tests.csproj"
-        $testClassFilter = "$($results.csprojName).Tests$($results.changedFqn -replace $results.csprojName).$($results.changedName)Tests"
+        $testClassFilter = "$($results.csprojName).Tests$($modPath)$($results.changedName)Tests"
     }
 
-    #Write-Host "dotnet test $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" -v n"
+    Write-Host "dotnet test $testProjectPath --no-restore --configuration DEBUG --filter `"FullyQualifiedName~$testClassFilter`" -v n"
     try {
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -407,7 +409,7 @@ function RunTests {
 
         TestRunElapsed -stopwatch $stopwatch
 
-        $output | ForEach-Object { Invoke-DebugLog $_ }
+        #$output | ForEach-Object { Invoke-DebugLog $_ }
 
         Write-Host ""
         return $output
@@ -453,8 +455,12 @@ function RetrievePaths {
 
     $relativePath = $changedFilePath.Substring($changedFilePath.LastIndexOf('\') + 1)
     $relativePath = $relativePath -replace '\\', '.'
+    $relativePath = $relativePath -replace  $csprojFileName, ''
+    if (-not [string]::IsNullOrWhiteSpace($relativePath)) {
+        $relativePath = "." + $relativePath
+    }
 
-    $changedFqn = $csprojFileName + "." + $relativePath
+    $changedFqn = $csprojFileName + $relativePath
 
     $obj = @{
         success = [bool]$csprojFile
@@ -462,6 +468,7 @@ function RetrievePaths {
         csprojName = $csprojFileName
         changedPath = $changedFilePath
         changedName = $changedFileName
+        relativePath = $relativePath
         changedFqn = $changedFqn
     }
 
