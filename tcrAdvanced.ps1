@@ -483,6 +483,9 @@ function Register-Watcher {
     $watcher = New-Object IO.FileSystemWatcher $folder, $filter -Property @{ 
         IncludeSubdirectories = $true
         EnableRaisingEvents = $true
+        NotifyFilter = [IO.NotifyFilters]::FileName -bor `
+                       [IO.NotifyFilters]::LastWrite -bor `
+                       [IO.NotifyFilters]::Size
     }
 
     return $watcher
@@ -504,13 +507,14 @@ $global:tcrPaused = $false
 function DoTheWork{
     $FileSystemWatcher = Register-Watcher
     $Action = {
-
+            
             
         if($global:tcrPaused){ 
             return
         }
          
         $filePath = $event.SourceEventArgs.FullPath
+    
         if ($filePath -match "\\obj\\") {
             #Write-Host "Ignoring changes in obj directory: $filePath" -ForegroundColor Yellow
             return
@@ -518,6 +522,8 @@ function DoTheWork{
 
         # Ensure the event is for a file with exactly the .cs extension
         if ($filePath -match "\.cs$" -or $filePath -match "\.csproj$") {
+            $changeType = $event.SourceEventArgs.ChangeType # Get the type of change (Created, Changed, Deleted, Renamed)
+    
             #Write-Host "Processing file: $filePath"
             $tcrRunning = $true
             TCR $event
@@ -528,9 +534,9 @@ function DoTheWork{
     }
     # add event handlers
     $handlers = . {
-        Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Changed" -Action $Action -SourceIdentifier FSChange
-        Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Created" -Action $Action -SourceIdentifier FSCreate
-        Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Deleted" -Action $Action -SourceIdentifier FSDelete
+        #Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Changed" -Action $Action -SourceIdentifier FSChange
+        #Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Created" -Action $Action -SourceIdentifier FSCreate
+        #Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Deleted" -Action $Action -SourceIdentifier FSDelete
         Register-ObjectEvent -InputObject $FileSystemWatcher -EventName "Renamed" -Action $Action -SourceIdentifier FSRename
     }
 
@@ -575,9 +581,9 @@ function DoTheWork{
         Write-Host "`nExiting. Thank you for playing!"
         # this gets executed when user presses CTRL+C
         # remove the event handlers
-        Unregister-Event -SourceIdentifier FSChange
-        Unregister-Event -SourceIdentifier FSCreate
-        Unregister-Event -SourceIdentifier FSDelete
+        #Unregister-Event -SourceIdentifier FSChange
+        #Unregister-Event -SourceIdentifier FSCreate
+        #Unregister-Event -SourceIdentifier FSDelete
         Unregister-Event -SourceIdentifier FSRename
         # remove background jobs
         $handlers | Remove-Job
